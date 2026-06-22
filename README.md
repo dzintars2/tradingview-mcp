@@ -14,6 +14,16 @@ Personal AI assistant for your TradingView Desktop charts. Connects Claude Code 
 > [!CAUTION]
 > This tool accesses undocumented internal TradingView APIs via the Electron debug interface. These can change or break without notice in any TradingView update. Pin your TradingView Desktop version if stability matters to you.
 
+## About This Fork
+
+This repository is a fork of [tradesdontlie/tradingview-mcp](https://github.com/tradesdontlie/tradingview-mcp). It tracks upstream and adds the following fixes on top:
+
+- **Multi-chart-tab CDP binding** (`src/connection.js`, `src/core/health.js`) — when several TradingView chart tabs are open (each is a separate CDP target), the bridge now binds to the **visible front tab** instead of whichever target happened to be first in the list, and follows tab switches. This fixes data tools and screenshots referring to different charts. Added a `TV_CHART_SLUG` env var to pin one chart deterministically, and `tv_health_check` now reports every open chart tab (`open_chart_tabs`) plus a `tab_warning` when the binding is ambiguous.
+- **`quote_get` symbol handling** (`src/core/data.js`) — previously it ignored its `symbol` argument and silently returned the active chart's price under the requested ticker. It now reads the active chart only and returns a clear error when the requested symbol doesn't match, instead of mislabeling the data.
+- **`capture_screenshot` inline image** (`src/tools/capture.js`, `src/core/capture.js`) — added an opt-in `embed: true` that returns the screenshot as a viewable inline image (MCP image block). The default still returns just the file path to keep responses small.
+- **Alerts rework** (`src/core/alerts.js`, `src/tools/alerts.js`) — create/list/delete go through TradingView's internal price-alerts REST API, and `alert_delete` supports targeted per-id deletion (`alert_id`) rather than only all-or-nothing wipes.
+- **Chart/drawing API resolution** (`src/core/chart.js`, `src/core/drawing.js`) — made the remaining chart and drawing functions resolve the active chart API consistently via dependency injection, fixing calls that didn't go through `getChartApi`.
+
 ## How It Works (and why it's safe to run)
 
 This tool does not connect to TradingView's servers, modify any TradingView files, or intercept any network traffic. It communicates exclusively with your locally running TradingView Desktop instance via Chrome DevTools Protocol (CDP) — a standard debugging interface built into all Chromium/Electron applications by Google, including VS Code, Slack, and Discord.
@@ -72,7 +82,7 @@ Gives your AI assistant eyes and hands on your own chart:
 
 Paste this into Claude Code and it will handle the rest:
 
-> Install the TradingView MCP server. Clone https://github.com/tradesdontlie/tradingview-mcp.git, run npm install, add it to my MCP config at ~/.claude/.mcp.json, and launch TradingView with the debug port. Then verify the connection with tv_health_check.
+> Install the TradingView MCP server. Clone https://github.com/dzintars2/tradingview-mcp.git, run npm install, add it to my MCP config at ~/.claude/.mcp.json, and launch TradingView with the debug port. Then verify the connection with tv_health_check.
 
 Or follow the manual steps below.
 
@@ -81,7 +91,7 @@ Or follow the manual steps below.
 ### 1. Install
 
 ```bash
-git clone https://github.com/tradesdontlie/tradingview-mcp.git
+git clone https://github.com/dzintars2/tradingview-mcp.git
 cd tradingview-mcp
 npm install
 ```
