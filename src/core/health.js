@@ -1,7 +1,7 @@
 /**
  * Core health/discovery/launch logic.
  */
-import { getClient, getTargetInfo, evaluate } from '../connection.js';
+import { getClient, getTargetInfo, getChartTabs, evaluate } from '../connection.js';
 import { existsSync } from 'fs';
 import { execSync, spawn } from 'child_process';
 
@@ -29,7 +29,10 @@ export async function healthCheck() {
     })()
   `);
 
-  return {
+  // Surface every open chart tab so a wrong binding (the data tab ≠ the tab on
+  // screen) is immediately visible instead of silently mislabeling reads.
+  const tabs = await getChartTabs();
+  const result = {
     success: true,
     cdp_connected: true,
     target_id: target.id,
@@ -39,7 +42,28 @@ export async function healthCheck() {
     chart_resolution: state?.resolution || 'unknown',
     chart_type: state?.chartType ?? null,
     api_available: state?.apiAvailable ?? false,
+    open_chart_tabs: tabs,
   };
+
+  if (tabs.length > 1) {
+    const visible = tabs.filter(t => t.visibility === 'visible');
+    if (visible.length === 0) {
+      result.tab_warning =
+        `${tabs.length} chart tabs open and none reports "visible" (TradingView is not the ` +
+        `foreground app), so the front tab can't be detected — bound to ${slugOf(target.url) || target.id} ` +
+        `(${state?.symbol || 'unknown'}). If that's the wrong chart, set TV_CHART_SLUG to pin one.`;
+    } else if (!visible.some(t => t.bound)) {
+      result.tab_warning =
+        `Bound to ${slugOf(target.url) || target.id} (${state?.symbol || 'unknown'}) but the visible ` +
+        `front tab is ${visible[0].slug} (${visible[0].symbol}). Reconnect or set TV_CHART_SLUG.`;
+    }
+  }
+
+  return result;
+}
+
+function slugOf(url) {
+  return (String(url).match(/\/chart\/([^/?#]+)/) || [])[1] || null;
 }
 
 export async function discover() {

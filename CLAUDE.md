@@ -82,7 +82,7 @@ Use `study_filter` parameter to target a specific indicator by name substring (e
 
 ### "TradingView isn't running"
 - `tv_launch` → auto-detect and launch TradingView with CDP on Mac/Win/Linux
-- `tv_health_check` → verify connection is working
+- `tv_health_check` → verify connection + report which chart tab the MCP is bound to (`open_chart_tabs`, `tab_warning`)
 
 ## Context Management Rules
 
@@ -119,6 +119,10 @@ These tools can return large payloads. Follow these rules to avoid context bloat
 - Screenshots save to `screenshots/` directory with timestamps
 - OHLCV capped at 500 bars, trades at 20 per request
 - Pine labels capped at 50 per study by default (pass `max_labels` to override)
+
+### Multiple chart tabs
+
+Each TradingView chart tab is a **separate CDP target**. With more than one open, the MCP binds to the **visible (front) tab** so data tools and screenshots refer to the same chart. Caveat: the OS-level "visible" signal only works while TradingView is the **foreground app** — if it's backgrounded, no tab reports visible and the MCP falls back to a best guess. When that's ambiguous, `tv_health_check` lists `open_chart_tabs` and emits a `tab_warning`. To pin one chart deterministically (ignore focus entirely), set the `TV_CHART_SLUG` env var to the chart's URL slug, e.g. `TV_CHART_SLUG=TsnuDBYe` (the `/chart/<slug>/` id). If a screenshot's symbol header doesn't match your data reads, you have two tabs open and the wrong one is bound — pin it.
 
 ## Architecture
 

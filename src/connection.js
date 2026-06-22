@@ -50,15 +50,45 @@ export function requireFinite(value, name) {
 export async function getClient() {
   if (client) {
     try {
-      // Quick liveness check
-      await client.Runtime.evaluate({ expression: '1', returnByValue: true });
-      return client;
+      // Liveness check that doubles as a front-tab check: read the bound tab's
+      // visibility. If it's no longer the chart the user is looking at, drop the
+      // connection and rebind below so data + screenshots stay on the same chart.
+      const vis = (await client.Runtime.evaluate({
+        expression: 'document.visibilityState', returnByValue: true,
+      })).result?.value;
+      if (await boundTargetStillPreferred(vis)) return client;
     } catch {
-      client = null;
-      targetInfo = null;
+      // Connection is dead — fall through to reconnect.
     }
+    try { await client.close(); } catch {}
+    client = null;
+    targetInfo = null;
   }
   return connect();
+}
+
+function escapeRe(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Should we keep the currently-bound target, or rebind to a better one?
+async function boundTargetStillPreferred(vis) {
+  const pin = process.env.TV_CHART_SLUG;
+  if (pin) {
+    // Pinned: stay on the pinned chart regardless of which tab is on screen.
+    return new RegExp(`/chart/${escapeRe(pin)}`, 'i').test(targetInfo?.url || '');
+  }
+  if (vis === 'visible') return true;
+  // Bound tab is hidden — only switch if a *different* chart tab is now visible.
+  // (If nothing is visible, e.g. the whole app is backgrounded, keep current to
+  // avoid thrashing between charts.)
+  try {
+    const { charts } = await listChartTargets();
+    const other = await findVisibleChartTarget(charts.filter(t => t.id !== targetInfo?.id));
+    return !other;
+  } catch {
+    return true;
+  }
 }
 
 export async function connect() {
@@ -87,13 +117,80 @@ export async function connect() {
   throw new Error(`CDP connection failed after ${MAX_RETRIES} attempts: ${lastError?.message}`);
 }
 
-async function findChartTarget() {
+async function listChartTargets() {
   const resp = await fetch(`http://${CDP_HOST}:${CDP_PORT}/json/list`);
   const targets = await resp.json();
-  // Prefer targets with tradingview.com/chart in the URL
-  return targets.find(t => t.type === 'page' && /tradingview\.com\/chart/i.test(t.url))
-    || targets.find(t => t.type === 'page' && /tradingview/i.test(t.url))
-    || null;
+  return {
+    charts: targets.filter(t => t.type === 'page' && /tradingview\.com\/chart/i.test(t.url)),
+    anyTv: targets.find(t => t.type === 'page' && /tradingview/i.test(t.url)) || null,
+  };
+}
+
+// Open a throwaway CDP connection to read an expression from another target
+// without disturbing the main client. Used to inspect candidate chart tabs.
+async function probeExpr(targetId, expression) {
+  let c;
+  try {
+    c = await CDP({ host: CDP_HOST, port: CDP_PORT, target: targetId });
+    await c.Runtime.enable();
+    const r = await c.Runtime.evaluate({ expression, returnByValue: true });
+    return r.result?.value ?? null;
+  } catch {
+    return null;
+  } finally {
+    if (c) { try { await c.close(); } catch {} }
+  }
+}
+
+// 'visible' marks the front (on-screen) tab; background tabs report 'hidden'.
+async function findVisibleChartTarget(charts) {
+  for (const t of charts) {
+    if (await probeExpr(t.id, 'document.visibilityState') === 'visible') return t;
+  }
+  return null;
+}
+
+const SYMBOL_EXPR = `(function(){try{return window.TradingViewApi._activeChartWidgetWV.value().symbol();}catch(e){return null;}})()`;
+
+function slugOf(url) {
+  return (String(url).match(/\/chart\/([^/?#]+)/) || [])[1] || null;
+}
+
+// Diagnostic: every open chart tab with its symbol, visibility, and whether the
+// MCP is currently bound to it. Lets callers detect/expose multi-tab ambiguity.
+export async function getChartTabs() {
+  const { charts } = await listChartTargets();
+  const out = [];
+  for (const t of charts) {
+    out.push({
+      id: t.id,
+      slug: slugOf(t.url),
+      symbol: await probeExpr(t.id, SYMBOL_EXPR),
+      visibility: await probeExpr(t.id, 'document.visibilityState'),
+      bound: t.id === targetInfo?.id,
+    });
+  }
+  return out;
+}
+
+async function findChartTarget() {
+  const { charts, anyTv } = await listChartTargets();
+  if (charts.length === 0) return anyTv;
+
+  // Pin override: bind to a specific chart by URL slug (the /chart/<slug>/ id),
+  // regardless of which tab is on screen. Set TV_CHART_SLUG to enable.
+  const pin = process.env.TV_CHART_SLUG;
+  if (pin) {
+    const pinned = charts.find(t => new RegExp(`/chart/${escapeRe(pin)}`, 'i').test(t.url));
+    if (pinned) return pinned;
+  }
+
+  if (charts.length === 1) return charts[0];
+
+  // Multiple chart tabs open: bind to the visible (front) tab so that data tools
+  // and screenshots both refer to the chart the user is actually looking at.
+  // Fall back to the first chart if none report visible (e.g. app backgrounded).
+  return (await findVisibleChartTarget(charts)) || charts[0];
 }
 
 export async function getTargetInfo() {
